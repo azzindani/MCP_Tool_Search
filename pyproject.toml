@@ -9,6 +9,11 @@ dependencies = [
     "joblib>=1.4",
 ]
 
+[project.optional-dependencies]
+semantic = [
+    "sentence-transformers>=3.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0",

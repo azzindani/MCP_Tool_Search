@@ -36,5 +36,11 @@ def list_servers() -> dict:
     return engine.list_servers()
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False))
+def reindex_servers() -> dict:
+    """Re-discover and re-index all sibling MCP servers."""
+    return engine.reindex()
+
+
 if __name__ == "__main__":
     mcp.run()

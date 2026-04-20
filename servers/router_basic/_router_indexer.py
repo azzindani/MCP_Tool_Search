@@ -9,8 +9,10 @@ from datetime import UTC
 from pathlib import Path
 
 from ._router_helpers import (
+    EMBEDDING_MODEL_NAME,
     REPO_NAME,
     get_db_path,
+    get_embeddings_path,
     get_mcp_base_dir,
     get_router_dir,
     get_tfidf_matrix_path,
@@ -35,7 +37,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             launch_command  TEXT NOT NULL,
             launch_style    TEXT NOT NULL DEFAULT 'standalone',
             tool_count      INTEGER NOT NULL,
-            indexed_at      TEXT NOT NULL
+            indexed_at      TEXT NOT NULL,
+            server_py_path  TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS tools (
             tool_id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +55,15 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
     """)
     conn.commit()
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Add new columns to existing DBs without recreating tables."""
+    try:
+        conn.execute("ALTER TABLE servers ADD COLUMN server_py_path TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
 
 def discover_servers(base_dir: Path) -> list[dict]:
@@ -82,6 +94,7 @@ def discover_servers(base_dir: Path) -> list[dict]:
                         "server_cwd": str(server_dir),
                         "launch_style": "standalone",
                         "launch_command": "uv run python server.py",
+                        "server_py_path": str(server_py),
                     }
                 )
 
@@ -101,6 +114,7 @@ def discover_servers(base_dir: Path) -> list[dict]:
                             "server_cwd": str(repo_dir),
                             "launch_style": "module",
                             "launch_command": f"uv run python -m {module_path}",
+                            "server_py_path": str(server_py),
                         }
                     )
 
@@ -172,6 +186,30 @@ def _build_tfidf_index(conn: sqlite3.Connection) -> None:
     joblib.dump({"matrix": matrix, "tool_ids": tool_ids}, str(get_tfidf_matrix_path()))
 
 
+def _build_semantic_index(conn: sqlite3.Connection) -> bool:
+    """Build and persist semantic embeddings. Returns True if successful."""
+    try:
+        import joblib
+        from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
+    except ImportError:
+        return False
+
+    rows = conn.execute("SELECT tool_id, enriched_text FROM tools ORDER BY tool_id").fetchall()
+    if not rows:
+        return False
+
+    tool_ids = [r["tool_id"] for r in rows]
+    texts = [r["enriched_text"] for r in rows]
+
+    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+
+    router_dir = get_router_dir()
+    router_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"embeddings": embeddings, "tool_ids": tool_ids}, str(get_embeddings_path()))
+    return True
+
+
 def reindex(base_dir: Path | None = None) -> dict:
     """Discover sibling servers, collect tools, rebuild SQLite + TF-IDF index."""
     from datetime import datetime
@@ -190,6 +228,7 @@ def reindex(base_dir: Path | None = None) -> dict:
 
     conn = _get_db_conn()
     _init_schema(conn)
+    _migrate_schema(conn)
 
     conn.execute("DELETE FROM tools")
     conn.execute("DELETE FROM servers")
@@ -211,7 +250,7 @@ def reindex(base_dir: Path | None = None) -> dict:
 
         now = datetime.now(UTC).isoformat()
         conn.execute(
-            "INSERT OR REPLACE INTO servers VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO servers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 server_info["repo_name"],
@@ -220,6 +259,7 @@ def reindex(base_dir: Path | None = None) -> dict:
                 server_info["launch_style"],
                 len(tools),
                 now,
+                server_info.get("server_py_path", ""),
             ),
         )
 
@@ -246,10 +286,17 @@ def reindex(base_dir: Path | None = None) -> dict:
         _build_tfidf_index(conn)
         progress.append(ok(f"TF-IDF index built for {total_tools} tools"))
 
+        if _build_semantic_index(conn):
+            progress.append(ok("Semantic embeddings built"))
+        else:
+            progress.append(
+                info("Semantic embeddings skipped (sentence-transformers not installed)")
+            )
+
     now_str = datetime.now(UTC).isoformat()
     conn.execute("INSERT OR REPLACE INTO index_meta VALUES ('total_tools', ?)", (str(total_tools),))
     conn.execute("INSERT OR REPLACE INTO index_meta VALUES ('last_indexed', ?)", (now_str,))
-    conn.execute("INSERT OR REPLACE INTO index_meta VALUES ('index_version', '1')")
+    conn.execute("INSERT OR REPLACE INTO index_meta VALUES ('index_version', '2')")
     conn.commit()
     conn.close()
 
@@ -285,8 +332,10 @@ def list_servers() -> dict:
         }
 
     conn = _get_db_conn()
+    _migrate_schema(conn)
     rows = conn.execute(
-        "SELECT server_name, repo_name, tool_count, indexed_at FROM servers ORDER BY server_name"
+        "SELECT server_name, repo_name, tool_count, indexed_at, server_py_path "
+        "FROM servers ORDER BY server_name"
     ).fetchall()
     meta = {
         r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM index_meta").fetchall()
@@ -303,24 +352,46 @@ def list_servers() -> dict:
         except Exception:
             pass
 
-    servers = [
-        {
-            "server_name": r["server_name"],
-            "repo_name": r["repo_name"],
-            "tool_count": r["tool_count"],
-            "indexed_at": r["indexed_at"],
-        }
-        for r in rows
-    ]
+    stale_servers: list[str] = []
+    servers = []
+    for r in rows:
+        server_py_path = r["server_py_path"]
+        is_stale = False
+        if server_py_path:
+            try:
+                mtime = Path(server_py_path).stat().st_mtime
+                indexed_at_dt = datetime.fromisoformat(r["indexed_at"])
+                if mtime > indexed_at_dt.timestamp():
+                    is_stale = True
+                    stale_servers.append(r["server_name"])
+            except Exception:
+                pass
+
+        servers.append(
+            {
+                "server_name": r["server_name"],
+                "repo_name": r["repo_name"],
+                "tool_count": r["tool_count"],
+                "indexed_at": r["indexed_at"],
+                "stale": is_stale,
+            }
+        )
+
     total_tools = int(meta.get("total_tools", sum(s["tool_count"] for s in servers)))
 
-    return {
+    result: dict = {
         "success": True,
         "op": "list_servers",
         "servers": servers,
         "total_servers": len(servers),
         "total_tools": total_tools,
         "index_age_hours": index_age_hours,
+        "stale_servers": stale_servers,
         "progress": [ok(f"Found {len(servers)} servers, {total_tools} tools")],
         "token_estimate": len(json.dumps(servers)) // 4,
     }
+    if stale_servers:
+        result["reindex_hint"] = (
+            f"{len(stale_servers)} server(s) have changed since indexing. Call reindex_servers()."
+        )
+    return result

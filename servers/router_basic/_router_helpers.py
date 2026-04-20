@@ -10,6 +10,8 @@ SERVER_NAME = "router_basic"
 DB_FILENAME = "registry.db"
 TFIDF_VECTORIZER_FILENAME = "tfidf_vectorizer.joblib"
 TFIDF_MATRIX_FILENAME = "tfidf_matrix.joblib"
+EMBEDDINGS_FILENAME = "embeddings.joblib"
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 TTL_SECONDS = 60
 REAP_INTERVAL = 15
@@ -37,6 +39,10 @@ def get_tfidf_vectorizer_path() -> Path:
 
 def get_tfidf_matrix_path() -> Path:
     return get_router_dir() / TFIDF_MATRIX_FILENAME
+
+
+def get_embeddings_path() -> Path:
+    return get_router_dir() / EMBEDDINGS_FILENAME
 
 
 def estimate_tokens(obj: object) -> int:

@@ -9,8 +9,10 @@ from typing import Any
 from ._router_helpers import (
     CONSTRAINED_TOP_N,
     DEFAULT_TOP_N,
+    EMBEDDING_MODEL_NAME,
     MCP_CONSTRAINED_MODE,
     get_db_path,
+    get_embeddings_path,
     get_tfidf_matrix_path,
     get_tfidf_vectorizer_path,
 )
@@ -21,6 +23,10 @@ _current_tools: dict[str, dict] = {}
 # Lazy-loaded TF-IDF artifacts (reset to None to force reload)
 _vectorizer: Any = None
 _matrix_data: dict[str, Any] | None = None
+
+# Lazy-loaded semantic artifacts
+_embeddings_data: dict[str, Any] | None = None
+_embedding_model: Any = None
 
 
 def _load_tfidf() -> tuple[Any, Any, list[int]]:
@@ -35,10 +41,42 @@ def _load_tfidf() -> tuple[Any, Any, list[int]]:
     return _vectorizer, data["matrix"], data["tool_ids"]
 
 
+def _load_embeddings() -> tuple[Any, list[int]] | None:
+    global _embeddings_data
+    emb_path = get_embeddings_path()
+    if not emb_path.exists():
+        return None
+    if _embeddings_data is None:
+        import joblib
+
+        _embeddings_data = joblib.load(str(emb_path))
+    data = _embeddings_data
+    assert data is not None
+    return data["embeddings"], data["tool_ids"]
+
+
+def _get_embedding_model() -> Any:
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
+
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _embedding_model
+
+
 def _get_db_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(get_db_path()))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _min_max_normalize(scores: Any) -> Any:
+    import numpy as np
+
+    mn, mx = scores.min(), scores.max()
+    if mx - mn < 1e-9:
+        return np.zeros_like(scores)
+    return (scores - mn) / (mx - mn)
 
 
 def search_tools(query: str, top_n: int | None = None) -> dict:
@@ -65,7 +103,7 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
         }
 
     try:
-        vectorizer, matrix, tool_ids = _load_tfidf()
+        vectorizer, matrix, tfidf_tool_ids = _load_tfidf()
     except Exception as e:
         return {
             "success": False,
@@ -83,11 +121,34 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
     from sklearn.metrics.pairwise import cosine_similarity
 
     query_vec = vectorizer.transform([query])
-    scores = cosine_similarity(query_vec, matrix).flatten()
+    tfidf_scores = cosine_similarity(query_vec, matrix).flatten()
 
-    top_indices = np.argsort(scores)[::-1][:top_n]
-    top_tool_ids = [tool_ids[i] for i in top_indices if scores[i] > 0]
-    top_scores = [float(scores[i]) for i in top_indices if scores[i] > 0]
+    retrieval_mode = "tfidf"
+    final_scores = tfidf_scores
+    final_tool_ids = tfidf_tool_ids
+
+    # Attempt hybrid retrieval when embeddings are available and not constrained
+    if not MCP_CONSTRAINED_MODE:
+        try:
+            emb_result = _load_embeddings()
+            if emb_result is not None:
+                embeddings, emb_tool_ids = emb_result
+                model = _get_embedding_model()
+                query_emb = model.encode([query], convert_to_numpy=True)
+                sem_scores = cosine_similarity(query_emb, embeddings).flatten()
+
+                # Both must reference same tool_ids in same order
+                if emb_tool_ids == tfidf_tool_ids:
+                    norm_tfidf = _min_max_normalize(tfidf_scores)
+                    norm_sem = _min_max_normalize(sem_scores)
+                    final_scores = 0.5 * norm_tfidf + 0.5 * norm_sem
+                    retrieval_mode = "hybrid"
+        except Exception:
+            pass  # fall back to TF-IDF silently
+
+    top_indices = np.argsort(final_scores)[::-1][:top_n]
+    top_tool_ids = [final_tool_ids[i] for i in top_indices if final_scores[i] > 0]
+    top_scores = [float(final_scores[i]) for i in top_indices if final_scores[i] > 0]
 
     if not top_tool_ids:
         return {
@@ -95,8 +156,9 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
             "op": "search_tools",
             "query": query,
             "returned": 0,
-            "total_indexed": len(tool_ids),
+            "total_indexed": len(final_tool_ids),
             "tools": [],
+            "retrieval_mode": retrieval_mode,
             "cache_hint": "No matches found. Try different keywords.",
             "progress": [warn("No matching tools found")],
             "token_estimate": 50,
@@ -141,6 +203,7 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
         "returned": len(tools),
         "total_indexed": total_indexed,
         "tools": tools,
+        "retrieval_mode": retrieval_mode,
         "cache_hint": "Call execute_tool with server_name and tool_name from above.",
         "progress": [ok(f"Found {len(tools)} matching tools")],
         "token_estimate": len(json.dumps(tools)) // 4,
