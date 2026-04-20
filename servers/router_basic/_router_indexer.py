@@ -53,17 +53,34 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             key     TEXT PRIMARY KEY,
             value   TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS tool_usage (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            server_name TEXT NOT NULL,
+            tool_name   TEXT NOT NULL,
+            called_at   TEXT NOT NULL,
+            success     INTEGER NOT NULL DEFAULT 1
+        );
     """)
     conn.commit()
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """Add new columns to existing DBs without recreating tables."""
+    """Add new columns / tables to existing DBs without recreating."""
     try:
         conn.execute("ALTER TABLE servers ADD COLUMN server_py_path TEXT NOT NULL DEFAULT ''")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # column already exists
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_usage (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            server_name TEXT NOT NULL,
+            tool_name   TEXT NOT NULL,
+            called_at   TEXT NOT NULL,
+            success     INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    conn.commit()
 
 
 def discover_servers(base_dir: Path) -> list[dict]:

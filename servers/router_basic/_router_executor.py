@@ -99,6 +99,31 @@ def _get_db_conn() -> sqlite3.Connection:
     return conn
 
 
+def _record_usage(server_name: str, tool_name: str, success: bool) -> None:
+    """Record a tool call in tool_usage (best-effort, never raises)."""
+    try:
+        from datetime import UTC, datetime
+
+        conn = sqlite3.connect(str(get_db_path()))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tool_usage (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_name TEXT NOT NULL,
+                tool_name   TEXT NOT NULL,
+                called_at   TEXT NOT NULL,
+                success     INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        conn.execute(
+            "INSERT INTO tool_usage (server_name, tool_name, called_at, success) VALUES (?, ?, ?, ?)",
+            (server_name, tool_name, datetime.now(UTC).isoformat(), int(success)),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 async def _execute_tool_async(server_name: str, tool_name: str, arguments: str) -> dict:
     from shared.progress import fail, info, ok
 
@@ -218,6 +243,7 @@ async def _execute_tool_async(server_name: str, tool_name: str, arguments: str) 
 
     elapsed = round(time.monotonic() - t_start, 3)
     progress.append(ok(f"Completed in {elapsed}s"))
+    _record_usage(server_name, tool_name, True)
 
     result_data: Any = {}
     if hasattr(result, "content"):

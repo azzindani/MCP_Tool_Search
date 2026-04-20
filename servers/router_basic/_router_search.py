@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from ._router_helpers import (
@@ -11,6 +13,7 @@ from ._router_helpers import (
     DEFAULT_TOP_N,
     EMBEDDING_MODEL_NAME,
     MCP_CONSTRAINED_MODE,
+    USAGE_BOOST_FACTOR,
     get_db_path,
     get_embeddings_path,
     get_tfidf_matrix_path,
@@ -79,7 +82,29 @@ def _min_max_normalize(scores: Any) -> Any:
     return (scores - mn) / (mx - mn)
 
 
-def search_tools(query: str, top_n: int | None = None) -> dict:
+def _get_usage_counts(tool_ids: list[int], db_path: Path) -> dict[int, int]:
+    """Fetch successful call counts per tool_id. Returns {} on any error."""
+    if not tool_ids:
+        return {}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        ph = ",".join("?" * len(tool_ids))
+        rows = conn.execute(
+            f"SELECT t.tool_id, COUNT(u.id) AS cnt "
+            f"FROM tools t LEFT JOIN tool_usage u "
+            f"ON t.server_name = u.server_name AND t.tool_name = u.tool_name "
+            f"WHERE t.tool_id IN ({ph}) AND (u.success IS NULL OR u.success = 1) "
+            f"GROUP BY t.tool_id",
+            tool_ids,
+        ).fetchall()
+        conn.close()
+        return {r["tool_id"]: r["cnt"] for r in rows}
+    except Exception:
+        return {}
+
+
+def search_tools(query: str, top_n: int | None = None, context: str | None = None) -> dict:
     """Search indexed tools by TF-IDF cosine similarity. Returns top-N results."""
     from shared.progress import fail, ok, warn
 
@@ -117,10 +142,13 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
             "token_estimate": 50,
         }
 
+    # Build effective query from optional context
+    effective_query = f"{context.strip()} {query.strip()}" if context else query
+
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity
 
-    query_vec = vectorizer.transform([query])
+    query_vec = vectorizer.transform([effective_query])
     tfidf_scores = cosine_similarity(query_vec, matrix).flatten()
 
     retrieval_mode = "tfidf"
@@ -134,10 +162,9 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
             if emb_result is not None:
                 embeddings, emb_tool_ids = emb_result
                 model = _get_embedding_model()
-                query_emb = model.encode([query], convert_to_numpy=True)
+                query_emb = model.encode([effective_query], convert_to_numpy=True)
                 sem_scores = cosine_similarity(query_emb, embeddings).flatten()
 
-                # Both must reference same tool_ids in same order
                 if emb_tool_ids == tfidf_tool_ids:
                     norm_tfidf = _min_max_normalize(tfidf_scores)
                     norm_sem = _min_max_normalize(sem_scores)
@@ -145,6 +172,20 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
                     retrieval_mode = "hybrid"
         except Exception:
             pass  # fall back to TF-IDF silently
+
+    # Apply usage boost (re-ranks tools used successfully in the past)
+    try:
+        nonzero_mask = final_scores > 0
+        if nonzero_mask.any():
+            nonzero_idx = list(np.where(nonzero_mask)[0])
+            nonzero_ids = [final_tool_ids[i] for i in nonzero_idx]
+            usage_counts = _get_usage_counts(nonzero_ids, db_path)
+            for idx, tid in zip(nonzero_idx, nonzero_ids):
+                cnt = usage_counts.get(tid, 0)
+                if cnt > 0:
+                    final_scores[idx] *= 1.0 + math.log1p(cnt) * USAGE_BOOST_FACTOR
+    except Exception:
+        pass
 
     top_indices = np.argsort(final_scores)[::-1][:top_n]
     top_tool_ids = [final_tool_ids[i] for i in top_indices if final_scores[i] > 0]
@@ -159,6 +200,7 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
             "total_indexed": len(final_tool_ids),
             "tools": [],
             "retrieval_mode": retrieval_mode,
+            "context_used": bool(context),
             "cache_hint": "No matches found. Try different keywords.",
             "progress": [warn("No matching tools found")],
             "token_estimate": 50,
@@ -204,6 +246,7 @@ def search_tools(query: str, top_n: int | None = None) -> dict:
         "total_indexed": total_indexed,
         "tools": tools,
         "retrieval_mode": retrieval_mode,
+        "context_used": bool(context),
         "cache_hint": "Call execute_tool with server_name and tool_name from above.",
         "progress": [ok(f"Found {len(tools)} matching tools")],
         "token_estimate": len(json.dumps(tools)) // 4,

@@ -19,9 +19,9 @@ mcp = FastMCP("tool-router")
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
-def search_tools(query: str, top_n: int = 20) -> dict:
+def search_tools(query: str, top_n: int = 20, context: str = "") -> dict:
     """Search indexed tools by query. Returns top-N tool schemas."""
-    return engine.search_tools(query, top_n)
+    return engine.search_tools(query, top_n, context=context or None)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False))
@@ -42,5 +42,16 @@ def reindex_servers() -> dict:
     return engine.reindex()
 
 
+def _run_server() -> None:
+    """Start the MCP server. Uses HTTP transport when MCP_HTTP_MODE=1."""
+    import os
+
+    if os.environ.get("MCP_HTTP_MODE", "0") == "1":
+        port = int(os.environ.get("MCP_HTTP_PORT", "8080"))
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=port)  # type: ignore[call-arg]
+    else:
+        mcp.run()
+
+
 if __name__ == "__main__":
-    mcp.run()
+    _run_server()
