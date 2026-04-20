@@ -433,7 +433,7 @@ class TestSearchRetrievalMode:
                 "servers.router_basic._router_search.get_embeddings_path",
                 return_value=tmp_path / "embeddings.joblib",
             ),
-            patch("servers.router_basic._router_search.MCP_CONSTRAINED_MODE", False),
+            patch("servers.router_basic._router_search.is_constrained_mode", return_value=False),
         ):
             yield
 

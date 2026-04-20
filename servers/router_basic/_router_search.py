@@ -8,11 +8,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from shared.platform_utils import is_constrained_mode
+
 from ._router_helpers import (
     CONSTRAINED_TOP_N,
     DEFAULT_TOP_N,
     EMBEDDING_MODEL_NAME,
-    MCP_CONSTRAINED_MODE,
     USAGE_BOOST_FACTOR,
     get_db_path,
     get_embeddings_path,
@@ -108,8 +109,9 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
     """Search indexed tools by TF-IDF cosine similarity. Returns top-N results."""
     from shared.progress import fail, ok, warn
 
+    constrained = is_constrained_mode()
     if top_n is None:
-        top_n = CONSTRAINED_TOP_N if MCP_CONSTRAINED_MODE else DEFAULT_TOP_N
+        top_n = CONSTRAINED_TOP_N if constrained else DEFAULT_TOP_N
 
     db_path = get_db_path()
     vec_path = get_tfidf_vectorizer_path()
@@ -123,6 +125,7 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
             "tools": [],
             "returned": 0,
             "total_indexed": 0,
+            "truncated": False,
             "progress": [fail("Index not found")],
             "token_estimate": 50,
         }
@@ -138,6 +141,7 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
             "tools": [],
             "returned": 0,
             "total_indexed": 0,
+            "truncated": False,
             "progress": [fail(f"TF-IDF load error: {e}")],
             "token_estimate": 50,
         }
@@ -156,7 +160,7 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
     final_tool_ids = tfidf_tool_ids
 
     # Attempt hybrid retrieval when embeddings are available and not constrained
-    if not MCP_CONSTRAINED_MODE:
+    if not constrained:
         try:
             emb_result = _load_embeddings()
             if emb_result is not None:
@@ -187,12 +191,14 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
     except Exception:
         pass
 
+    # Count all matching results before top-N cut for truncated flag
+    nonzero_count = int((final_scores > 0).sum())
     top_indices = np.argsort(final_scores)[::-1][:top_n]
     top_tool_ids = [final_tool_ids[i] for i in top_indices if final_scores[i] > 0]
     top_scores = [float(final_scores[i]) for i in top_indices if final_scores[i] > 0]
 
     if not top_tool_ids:
-        return {
+        response: dict[str, Any] = {
             "success": True,
             "op": "search_tools",
             "query": query,
@@ -201,10 +207,12 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
             "tools": [],
             "retrieval_mode": retrieval_mode,
             "context_used": bool(context),
+            "truncated": False,
             "cache_hint": "No matches found. Try different keywords.",
             "progress": [warn("No matching tools found")],
-            "token_estimate": 50,
         }
+        response["token_estimate"] = len(json.dumps(response, default=str)) // 4
+        return response
 
     conn = _get_db_conn()
     placeholders = ",".join("?" * len(top_tool_ids))
@@ -238,7 +246,7 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
         tools.append(entry)
         _current_tools[f"{row['server_name']}/{row['tool_name']}"] = entry
 
-    return {
+    response = {
         "success": True,
         "op": "search_tools",
         "query": query,
@@ -247,7 +255,9 @@ def search_tools(query: str, top_n: int | None = None, context: str | None = Non
         "tools": tools,
         "retrieval_mode": retrieval_mode,
         "context_used": bool(context),
+        "truncated": nonzero_count > top_n,
         "cache_hint": "Call execute_tool with server_name and tool_name from above.",
         "progress": [ok(f"Found {len(tools)} matching tools")],
-        "token_estimate": len(json.dumps(tools)) // 4,
     }
+    response["token_estimate"] = len(json.dumps(response, default=str)) // 4
+    return response

@@ -1,18 +1,23 @@
-def ok(msg: str) -> dict:
-    return {"level": "ok", "msg": msg}
+"""Progress helper functions for tool response arrays."""
+
+from __future__ import annotations
 
 
-def fail(msg: str) -> dict:
-    return {"level": "fail", "msg": msg}
+def ok(msg: str, detail: str = "") -> dict:
+    return {"icon": "✔", "msg": msg, "detail": detail}
 
 
-def info(msg: str) -> dict:
-    return {"level": "info", "msg": msg}
+def fail(msg: str, detail: str = "") -> dict:
+    return {"icon": "✗", "msg": msg, "detail": detail}
 
 
-def warn(msg: str) -> dict:
-    return {"level": "warn", "msg": msg}
+def info(msg: str, detail: str = "") -> dict:
+    return {"icon": "ℹ", "msg": msg, "detail": detail}
 
 
-def undo(msg: str) -> dict:
-    return {"level": "undo", "msg": msg}
+def warn(msg: str, detail: str = "") -> dict:
+    return {"icon": "⚠", "msg": msg, "detail": detail}
+
+
+def undo(msg: str, detail: str = "") -> dict:
+    return {"icon": "↶", "msg": msg, "detail": detail}

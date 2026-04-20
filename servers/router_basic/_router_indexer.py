@@ -405,10 +405,10 @@ def list_servers() -> dict:
         "index_age_hours": index_age_hours,
         "stale_servers": stale_servers,
         "progress": [ok(f"Found {len(servers)} servers, {total_tools} tools")],
-        "token_estimate": len(json.dumps(servers)) // 4,
     }
     if stale_servers:
         result["reindex_hint"] = (
             f"{len(stale_servers)} server(s) have changed since indexing. Call reindex_servers()."
         )
+    result["token_estimate"] = len(json.dumps(result, default=str)) // 4
     return result

@@ -19,7 +19,6 @@ DEFAULT_TOP_N = 20
 CONSTRAINED_TOP_N = 10
 USAGE_BOOST_FACTOR: float = 0.2
 
-MCP_CONSTRAINED_MODE: bool = os.environ.get("MCP_CONSTRAINED_MODE", "0") == "1"
 MCP_HTTP_MODE: bool = os.environ.get("MCP_HTTP_MODE", "0") == "1"
 MCP_HTTP_PORT: int = int(os.environ.get("MCP_HTTP_PORT", "8080"))
 

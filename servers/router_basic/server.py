@@ -18,25 +18,41 @@ from . import engine  # noqa: E402
 mcp = FastMCP("tool-router")
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+    )
+)
 def search_tools(query: str, top_n: int = 20, context: str = "") -> dict:
     """Search indexed tools by query. Returns top-N tool schemas."""
     return engine.search_tools(query, top_n, context=context or None)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+    )
+)
 def execute_tool(server_name: str, tool_name: str, arguments: str) -> dict:
     """Execute a tool on a child MCP server via JIT launch."""
     return engine.execute_tool(server_name, tool_name, arguments)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+    )
+)
 def list_servers() -> dict:
     """List all indexed MCP servers and their tool counts."""
     return engine.list_servers()
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+    )
+)
 def reindex_servers() -> dict:
     """Re-discover and re-index all sibling MCP servers."""
     return engine.reindex()
