@@ -27,7 +27,7 @@ ignore = ["E501"]
 
 [tool.pyright]
 pythonVersion = "3.12"
-strict = false
+typeCheckingMode = "basic"
 exclude = ["tests/fixtures/**"]
 
 [tool.pytest.ini_options]

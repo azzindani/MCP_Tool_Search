@@ -11,25 +11,26 @@ if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.types import ToolAnnotations  # noqa: E402
 
 from . import engine  # noqa: E402
 
 mcp = FastMCP("tool-router")
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
 def search_tools(query: str, top_n: int = 20) -> dict:
     """Search indexed tools by query. Returns top-N tool schemas."""
     return engine.search_tools(query, top_n)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "openWorldHint": False})
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False))
 def execute_tool(server_name: str, tool_name: str, arguments: str) -> dict:
     """Execute a tool on a child MCP server via JIT launch."""
     return engine.execute_tool(server_name, tool_name, arguments)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
 def list_servers() -> dict:
     """List all indexed MCP servers and their tool counts."""
     return engine.list_servers()

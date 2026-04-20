@@ -30,7 +30,9 @@ def _load_tfidf() -> tuple[Any, Any, list[int]]:
 
         _vectorizer = joblib.load(str(get_tfidf_vectorizer_path()))
         _matrix_data = joblib.load(str(get_tfidf_matrix_path()))
-    return _vectorizer, _matrix_data["matrix"], _matrix_data["tool_ids"]
+    data = _matrix_data
+    assert data is not None
+    return _vectorizer, data["matrix"], data["tool_ids"]
 
 
 def _get_db_conn() -> sqlite3.Connection:
