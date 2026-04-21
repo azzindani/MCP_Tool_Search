@@ -1,0 +1,9 @@
+[project]
+name = "mock-server-a"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = ["fastmcp>=2.0,<3.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
